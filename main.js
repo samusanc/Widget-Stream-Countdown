@@ -1,155 +1,221 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+// ─────────────────────────────────────────────────────────
+//  DEFAULTS — shown in SE editor preview and used as
+//  fallback if onWidgetLoad doesn't fire.
+//  Live values come from the Fields panel.
+// ─────────────────────────────────────────────────────────
+var DEFAULTS = {
+  segments: [
+    { name: 'Just chat', minutes: 1,   color: '#5eead4' },
+    { name: 'AI',        minutes: 1,   color: '#818cf8' },
+    { name: 'Japanese',  minutes: 1,   color: '#fb923c' }
+  ],
+  countDown: true
+};
+
+// ─── Runtime state ───────────────────────────────────────
+var config    = null;   // { segments, countDown }
+var totalMs   = 0;
+var elapsed   = 0;
+var startTs   = null;
+var ticker    = null;
+var seLoaded  = false;
+
+// ─── Helpers ─────────────────────────────────────────────
+function calcTotal(segs) {
+  return segs.reduce(function(s, seg) {
+    return s + seg.minutes * 60000;
+  }, 0);
 }
 
-body {
-  background: transparent;
-  overflow: hidden;
+function currentSegmentIndex(ms) {
+  var acc = 0;
+  for (var i = 0; i < config.segments.length; i++) {
+    acc += config.segments[i].minutes * 60000;
+    if (ms < acc) return i;
+  }
+  return config.segments.length - 1;
 }
 
-.widget {
-  width: 100%;
-  padding: 6px 12px 8px;
-  font-family: 'Rajdhani', sans-serif;
+function fmt(ms) {
+  var secs = Math.max(0, Math.round(ms / 1000));
+  var h    = Math.floor(secs / 3600);
+  var m    = Math.floor((secs % 3600) / 60);
+  var s    = secs % 60;
+  var mm   = String(m).padStart(2, '0');
+  var ss   = String(s).padStart(2, '0');
+  return h > 0
+    ? String(h).padStart(2, '0') + ':' + mm + ':' + ss
+    : mm + ':' + ss;
 }
 
-/* ── Segment name labels above the bar ── */
-.seg-names {
-  display: flex;
-  width: 100%;
-  margin-bottom: 4px;
+// ─── Build the bar DOM (once per init) ───────────────────
+function buildBar() {
+  var barOuter = document.getElementById('barOuter');
+  var segNames = document.getElementById('segNames');
+  barOuter.innerHTML = '';
+  segNames.innerHTML = '';
+
+  config.segments.forEach(function(seg, i) {
+    var widthPct = (seg.minutes * 60000 / totalMs * 100).toFixed(3) + '%';
+
+    // ── name label above bar ──
+    var lbl = document.createElement('div');
+    lbl.className    = 'seg-name-item upcoming';
+    lbl.id           = 'name-' + i;
+    lbl.textContent  = seg.name;
+    lbl.style.width  = widthPct;
+    lbl.style.color  = seg.color;
+    segNames.appendChild(lbl);
+
+    // ── segment block ──
+    var block = document.createElement('div');
+    block.className  = 'bar-segment upcoming';
+    block.id         = 'seg-' + i;
+    block.style.width = widthPct;
+
+    // dark track (full width, low opacity background)
+    var track = document.createElement('div');
+    track.className           = 'bar-segment-track';
+    track.style.backgroundColor = seg.color;
+    block.appendChild(track);
+
+    // colored fill (grows with progress)
+    var fill = document.createElement('div');
+    fill.className            = 'bar-segment-fill';
+    fill.id                   = 'fill-' + i;
+    fill.style.backgroundColor = seg.color;
+    block.appendChild(fill);
+
+    barOuter.appendChild(block);
+  });
 }
 
-.seg-name-item {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  text-align: center;
-  text-transform: uppercase;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  padding: 0 3px;
-  transition: opacity 0.4s;
+// ─── Render current elapsed time onto bar ────────────────
+function render() {
+  var activeIdx   = currentSegmentIndex(Math.min(elapsed, totalMs - 1));
+  var activeSeg   = config.segments[activeIdx];
+  var displayMs   = config.countDown ? (totalMs - elapsed) : elapsed;
+
+  // accumulate segment starts
+  var acc = 0;
+  config.segments.forEach(function(seg, i) {
+    var segStart = acc;
+    var segEnd   = acc + seg.minutes * 60000;
+    acc          = segEnd;
+
+    var block = document.getElementById('seg-' + i);
+    var fill  = document.getElementById('fill-' + i);
+    var name  = document.getElementById('name-' + i);
+
+    if (elapsed >= segEnd) {
+      // fully done
+      block.className = 'bar-segment done' + (i === 0 ? ' first' : '') + (i === config.segments.length - 1 ? ' last' : '');
+      fill.className  = 'bar-segment-fill';
+      fill.style.width = '100%';
+      name.className  = 'seg-name-item done';
+    } else if (i === activeIdx) {
+      // currently active: grow the fill
+      var progress = (elapsed - segStart) / (seg.minutes * 60000) * 100;
+      block.className = 'bar-segment active';
+      fill.className  = 'bar-segment-fill shimmering';
+      fill.style.width = progress.toFixed(2) + '%';
+      name.className  = 'seg-name-item active';
+    } else {
+      // upcoming
+      block.className = 'bar-segment upcoming';
+      fill.className  = 'bar-segment-fill';
+      fill.style.width = '0%';
+      name.className  = 'seg-name-item upcoming';
+    }
+  });
+
+  // timer + current segment label
+  document.getElementById('timeLeft').textContent  = fmt(displayMs);
+  document.getElementById('timeLeft').style.color  = activeSeg.color;
+  document.getElementById('segLabel').textContent  = activeSeg.name;
+  document.getElementById('segLabel').style.color  = activeSeg.color;
 }
 
-.seg-name-item.done {
-  opacity: 0.35;
+// ─── Timer control ───────────────────────────────────────
+function startTimer() {
+  if (ticker) clearInterval(ticker);
+  startTs = Date.now() - elapsed;
+  ticker  = setInterval(function() {
+    elapsed = Date.now() - startTs;
+    if (elapsed >= totalMs) {
+      elapsed = totalMs;
+      render();
+      clearInterval(ticker);
+      ticker = null;
+    } else {
+      render();
+    }
+  }, 250);
 }
 
-.seg-name-item.active {
-  opacity: 1;
+function resetTimer() {
+  if (ticker) clearInterval(ticker);
+  ticker  = null;
+  elapsed = 0;
+  startTs = null;
+  render();
+  startTimer();
 }
 
-.seg-name-item.upcoming {
-  opacity: 0.55;
+// ─── Init ────────────────────────────────────────────────
+function init(segs, countDown) {
+  config   = { segments: segs, countDown: countDown };
+  totalMs  = calcTotal(segs);
+  elapsed  = 0;
+  buildBar();
+  render();
+  startTimer();
 }
 
-/* ── Progress bar container ── */
-.bar-outer {
-  width: 100%;
-  height: 22px;
-  display: flex;
-  border-radius: 11px;
-  overflow: hidden;
-  gap: 2px;
-  background: transparent;
+// ─── Parse segments from SE fieldData ────────────────────
+function segsFromFields(fd) {
+  var segs = [];
+  var i    = 1;
+  while (fd['seg' + i + 'Name'] !== undefined) {
+    segs.push({
+      name:    String(fd['seg' + i + 'Name']),
+      minutes: parseFloat(fd['seg' + i + 'Minutes']) || 1,
+      color:   fd['seg' + i + 'Color'] || '#ffffff'
+    });
+    i++;
+  }
+  return segs.length ? segs : null;
 }
 
-/* ── Each segment block inside the bar ── */
-.bar-segment {
-  height: 100%;
-  position: relative;
-  overflow: hidden;
-  flex-shrink: 0;
-  transition: opacity 0.4s;
-}
+// ─── StreamElements events ────────────────────────────────
+window.addEventListener('onWidgetLoad', function(obj) {
+  seLoaded   = true;
+  var fd     = obj.detail.fieldData;
+  var segs   = segsFromFields(fd) || DEFAULTS.segments;
+  var cd     = fd.countDown !== 'no';
+  init(segs, cd);
+});
 
-/* the dark unfilled track behind the fill */
-.bar-segment-track {
-  position: absolute;
-  inset: 0;
-  opacity: 0.15;
-}
+// Reset button from SE fields panel
+window.addEventListener('onFieldChange', function(obj) {
+  var f = obj.detail.fieldName;
+  var v = obj.detail.value;
 
-/* the actual colored fill that grows */
-.bar-segment-fill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  width: 0%;
-  transition: width 0.35s linear;
-}
+  if (f === 'resetBtn') {
+    resetTimer();
+    return;
+  }
 
-/* shimmer only on the active fill */
-.bar-segment-fill.shimmering::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: -80%;
-  width: 50%;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.22);
-  animation: shimmer 2s infinite linear;
-}
+  // re-init if any segment field or countDown changed
+  if (f.indexOf('seg') === 0 || f === 'countDown') {
+    var fd   = obj.detail.fieldData || {};
+    var segs = segsFromFields(fd) || (config ? config.segments : DEFAULTS.segments);
+    var cd   = fd.countDown !== undefined ? fd.countDown !== 'no' : (config ? config.countDown : true);
+    init(segs, cd);
+  }
+});
 
-@keyframes shimmer {
-  0%   { left: -80%; }
-  100% { left: 120%; }
-}
-
-/* done segments: full opacity fill, no shimmer */
-.bar-segment.done .bar-segment-fill {
-  width: 100% !important;
-}
-
-/* upcoming segments: dim track, no fill */
-.bar-segment.upcoming {
-  opacity: 0.45;
-}
-
-/* first segment gets rounded left corners */
-.bar-segment:first-child {
-  border-radius: 11px 0 0 11px;
-}
-
-/* last segment gets rounded right corners */
-.bar-segment:last-child {
-  border-radius: 0 11px 11px 0;
-}
-
-/* single segment: fully rounded */
-.bar-segment:only-child {
-  border-radius: 11px;
-}
-
-/* ── Bottom row ── */
-.time-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-top: 6px;
-}
-
-.time-left {
-  font-family: 'Orbitron', monospace;
-  font-size: 30px;
-  font-weight: 700;
-  color: #ffffff;
-  letter-spacing: 3px;
-  text-shadow: 0 0 14px currentColor;
-  transition: color 0.5s;
-}
-
-.seg-label {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 1.5px;
-  color: #ffffff;
-  opacity: 0.7;
-  text-transform: uppercase;
-  transition: color 0.4s;
-}
+// ─── Fallback for SE editor preview ─────────────────────
+setTimeout(function() {
+  if (!seLoaded) init(DEFAULTS.segments, DEFAULTS.countDown);
+}, 500);
