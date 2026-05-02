@@ -1,0 +1,90 @@
+{
+  "widgetName": {
+    "type": "hidden",
+    "value": "Stream Timer"
+  },
+
+  "seg1Name": {
+    "type": "text",
+    "label": "Segment 1 — Name",
+    "value": "Just chat",
+    "group": "Segment 1"
+  },
+  "seg1Minutes": {
+    "type": "number",
+    "label": "Segment 1 — Duration (minutes)",
+    "value": 60,
+    "min": 1,
+    "max": 360,
+    "step": 1,
+    "group": "Segment 1"
+  },
+  "seg1Color": {
+    "type": "colorpicker",
+    "label": "Segment 1 — Color",
+    "value": "#5eead4",
+    "group": "Segment 1"
+  },
+
+  "seg2Name": {
+    "type": "text",
+    "label": "Segment 2 — Name",
+    "value": "AI",
+    "group": "Segment 2"
+  },
+  "seg2Minutes": {
+    "type": "number",
+    "label": "Segment 2 — Duration (minutes)",
+    "value": 60,
+    "min": 1,
+    "max": 360,
+    "step": 1,
+    "group": "Segment 2"
+  },
+  "seg2Color": {
+    "type": "colorpicker",
+    "label": "Segment 2 — Color",
+    "value": "#818cf8",
+    "group": "Segment 2"
+  },
+
+  "seg3Name": {
+    "type": "text",
+    "label": "Segment 3 — Name",
+    "value": "Japanese",
+    "group": "Segment 3"
+  },
+  "seg3Minutes": {
+    "type": "number",
+    "label": "Segment 3 — Duration (minutes)",
+    "value": 60,
+    "min": 1,
+    "max": 360,
+    "step": 1,
+    "group": "Segment 3"
+  },
+  "seg3Color": {
+    "type": "colorpicker",
+    "label": "Segment 3 — Color",
+    "value": "#fb923c",
+    "group": "Segment 3"
+  },
+
+  "countDown": {
+    "type": "dropdown",
+    "label": "Count direction",
+    "value": "yes",
+    "options": {
+      "yes": "Count down (time remaining)",
+      "no":  "Count up (time elapsed)"
+    },
+    "group": "Settings"
+  },
+
+  "resetBtn": {
+    "type": "button",
+    "label": "Reset timer",
+    "value": "Reset",
+    "group": "Settings"
+  }
+}
