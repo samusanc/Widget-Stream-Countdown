@@ -1,24 +1,25 @@
-// ─────────────────────────────────────────────────────────
-//  DEFAULTS — shown in SE editor preview and used as
-//  fallback if onWidgetLoad doesn't fire.
-//  Live values come from the Fields panel.
-// ─────────────────────────────────────────────────────────
+// ─── Store key — must be unique per overlay ───────────────
+// Matches the storeName field. Fallback used in editor.
+var STORE_KEY = 'stream_timer_v1';
+
+// ─── Defaults (editor preview fallback) ──────────────────
 var DEFAULTS = {
   segments: [
     { name: 'Just chat', minutes: 1,   color: '#5eead4' },
     { name: 'AI',        minutes: 1,   color: '#818cf8' },
     { name: 'Japanese',  minutes: 1,   color: '#fb923c' }
   ],
-  countDown: true
+  startOffsetMs: 0   // how many ms already elapsed when timer starts
 };
 
 // ─── Runtime state ───────────────────────────────────────
-var config    = null;   // { segments, countDown }
-var totalMs   = 0;
-var elapsed   = 0;
-var startTs   = null;
-var ticker    = null;
-var seLoaded  = false;
+var config   = null;   // { segments[], startOffsetMs }
+var totalMs  = 0;
+var elapsed  = 0;      // ms elapsed from widget start point
+var startTs  = null;
+var ticker   = null;
+var seLoaded = false;
+var fd       = null;   // raw fieldData reference
 
 // ─── Helpers ─────────────────────────────────────────────
 function calcTotal(segs) {
@@ -27,7 +28,7 @@ function calcTotal(segs) {
   }, 0);
 }
 
-function currentSegmentIndex(ms) {
+function activeSegIndex(ms) {
   var acc = 0;
   for (var i = 0; i < config.segments.length; i++) {
     acc += config.segments[i].minutes * 60000;
@@ -36,19 +37,29 @@ function currentSegmentIndex(ms) {
   return config.segments.length - 1;
 }
 
-function fmt(ms) {
-  var secs = Math.max(0, Math.round(ms / 1000));
-  var h    = Math.floor(secs / 3600);
-  var m    = Math.floor((secs % 3600) / 60);
-  var s    = secs % 60;
-  var mm   = String(m).padStart(2, '0');
-  var ss   = String(s).padStart(2, '0');
-  return h > 0
-    ? String(h).padStart(2, '0') + ':' + mm + ':' + ss
-    : mm + ':' + ss;
+function segsFromFields(f) {
+  var segs = [], i = 1;
+  while (f['seg' + i + 'Name'] !== undefined) {
+    var mins = parseFloat(f['seg' + i + 'Minutes']);
+    segs.push({
+      name:    String(f['seg' + i + 'Name']),
+      minutes: isNaN(mins) || mins <= 0 ? 1 : mins,
+      color:   f['seg' + i + 'Color'] || '#ffffff'
+    });
+    i++;
+  }
+  return segs.length ? segs : null;
 }
 
-// ─── Build the bar DOM (once per init) ───────────────────
+// Convert fields startHours/startMins/startSecs into ms offset
+function offsetFromFields(f) {
+  var h = parseFloat(f.startHours) || 0;
+  var m = parseFloat(f.startMins)  || 0;
+  var s = parseFloat(f.startSecs)  || 0;
+  return Math.max(0, (h * 3600 + m * 60 + s) * 1000);
+}
+
+// ─── Build DOM once ───────────────────────────────────────
 function buildBar() {
   var barOuter = document.getElementById('barOuter');
   var segNames = document.getElementById('segNames');
@@ -56,87 +67,85 @@ function buildBar() {
   segNames.innerHTML = '';
 
   config.segments.forEach(function(seg, i) {
-    var widthPct = (seg.minutes * 60000 / totalMs * 100).toFixed(3) + '%';
+    var pct = (seg.minutes * 60000 / totalMs * 100).toFixed(3) + '%';
 
-    // ── name label above bar ──
     var lbl = document.createElement('div');
-    lbl.className    = 'seg-name-item upcoming';
-    lbl.id           = 'name-' + i;
-    lbl.textContent  = seg.name;
-    lbl.style.width  = widthPct;
-    lbl.style.color  = seg.color;
+    lbl.className   = 'seg-name-item state-upcoming';
+    lbl.id          = 'lbl-' + i;
+    lbl.textContent = seg.name;
+    lbl.style.width = pct;
+    lbl.style.color = seg.color;
     segNames.appendChild(lbl);
 
-    // ── segment block ──
-    var block = document.createElement('div');
-    block.className  = 'bar-segment upcoming';
-    block.id         = 'seg-' + i;
-    block.style.width = widthPct;
+    var slot = document.createElement('div');
+    slot.className   = 'bar-seg state-upcoming';
+    slot.id          = 'slot-' + i;
+    slot.style.width = pct;
 
-    // dark track (full width, low opacity background)
     var track = document.createElement('div');
-    track.className           = 'bar-segment-track';
+    track.className             = 'bar-track';
     track.style.backgroundColor = seg.color;
-    block.appendChild(track);
+    slot.appendChild(track);
 
-    // colored fill (grows with progress)
     var fill = document.createElement('div');
-    fill.className            = 'bar-segment-fill';
-    fill.id                   = 'fill-' + i;
+    fill.className             = 'bar-fill';
+    fill.id                    = 'fill-' + i;
     fill.style.backgroundColor = seg.color;
-    block.appendChild(fill);
+    slot.appendChild(fill);
 
-    barOuter.appendChild(block);
+    var shimmer = document.createElement('div');
+    shimmer.className = 'bar-shimmer';
+    slot.appendChild(shimmer);
+
+    barOuter.appendChild(slot);
   });
 }
 
-// ─── Render current elapsed time onto bar ────────────────
+// ─── Render frame ─────────────────────────────────────────
 function render() {
-  var activeIdx   = currentSegmentIndex(Math.min(elapsed, totalMs - 1));
-  var activeSeg   = config.segments[activeIdx];
-  var displayMs   = config.countDown ? (totalMs - elapsed) : elapsed;
+  var clamped   = Math.min(elapsed, totalMs);
+  var activeIdx = activeSegIndex(Math.min(clamped, totalMs - 1));
+  var acc       = 0;
 
-  // accumulate segment starts
-  var acc = 0;
   config.segments.forEach(function(seg, i) {
     var segStart = acc;
     var segEnd   = acc + seg.minutes * 60000;
     acc          = segEnd;
 
-    var block = document.getElementById('seg-' + i);
-    var fill  = document.getElementById('fill-' + i);
-    var name  = document.getElementById('name-' + i);
+    var slot = document.getElementById('slot-' + i);
+    var fill = document.getElementById('fill-' + i);
+    var lbl  = document.getElementById('lbl-' + i);
 
-    if (elapsed >= segEnd) {
-      // fully done
-      block.className = 'bar-segment done' + (i === 0 ? ' first' : '') + (i === config.segments.length - 1 ? ' last' : '');
-      fill.className  = 'bar-segment-fill';
+    if (clamped >= segEnd) {
+      slot.className   = 'bar-seg state-done';
+      lbl.className    = 'seg-name-item state-done';
       fill.style.width = '100%';
-      name.className  = 'seg-name-item done';
     } else if (i === activeIdx) {
-      // currently active: grow the fill
-      var progress = (elapsed - segStart) / (seg.minutes * 60000) * 100;
-      block.className = 'bar-segment active';
-      fill.className  = 'bar-segment-fill shimmering';
-      fill.style.width = progress.toFixed(2) + '%';
-      name.className  = 'seg-name-item active';
+      var localPct = ((clamped - segStart) / (seg.minutes * 60000) * 100).toFixed(3) + '%';
+      slot.className   = 'bar-seg state-active';
+      lbl.className    = 'seg-name-item state-active';
+      fill.style.width = localPct;
     } else {
-      // upcoming
-      block.className = 'bar-segment upcoming';
-      fill.className  = 'bar-segment-fill';
+      slot.className   = 'bar-seg state-upcoming';
+      lbl.className    = 'seg-name-item state-upcoming';
       fill.style.width = '0%';
-      name.className  = 'seg-name-item upcoming';
     }
   });
-
-  // timer + current segment label
-  document.getElementById('timeLeft').textContent  = fmt(displayMs);
-  document.getElementById('timeLeft').style.color  = activeSeg.color;
-  document.getElementById('segLabel').textContent  = activeSeg.name;
-  document.getElementById('segLabel').style.color  = activeSeg.color;
 }
 
-// ─── Timer control ───────────────────────────────────────
+// ─── Persist elapsed to SE store every 5s ─────────────────
+var persistCounter = 0;
+function maybePersist() {
+  persistCounter++;
+  if (persistCounter >= 20) {   // 20 * 250ms = 5s
+    persistCounter = 0;
+    try {
+      SE_API.store.set(STORE_KEY, { elapsed: elapsed });
+    } catch(e) {}
+  }
+}
+
+// ─── Timer ───────────────────────────────────────────────
 function startTimer() {
   if (ticker) clearInterval(ticker);
   startTs = Date.now() - elapsed;
@@ -145,77 +154,114 @@ function startTimer() {
     if (elapsed >= totalMs) {
       elapsed = totalMs;
       render();
+      maybePersist();
       clearInterval(ticker);
       ticker = null;
     } else {
       render();
+      maybePersist();
     }
-  }, 250);
+  }, 100);
 }
 
+// Reset: write fresh offset to store, then restart
 function resetTimer() {
   if (ticker) clearInterval(ticker);
   ticker  = null;
-  elapsed = 0;
-  startTs = null;
+
+  // Use startOffset from fields (the custom start point)
+  var offset = fd ? offsetFromFields(fd) : 0;
+  elapsed = offset;
+
+  try {
+    SE_API.store.set(STORE_KEY, { elapsed: elapsed });
+  } catch(e) {}
+
   render();
   startTimer();
 }
 
-// ─── Init ────────────────────────────────────────────────
-function init(segs, countDown) {
-  config   = { segments: segs, countDown: countDown };
-  totalMs  = calcTotal(segs);
-  elapsed  = 0;
+// ─── Init ─────────────────────────────────────────────────
+function init(segs, offset, storedElapsed) {
+  config  = { segments: segs };
+  totalMs = calcTotal(segs);
+
+  // If we have a stored value use it, otherwise use the offset
+  elapsed = (storedElapsed !== null && storedElapsed !== undefined)
+    ? storedElapsed
+    : offset;
+
   buildBar();
   render();
   startTimer();
 }
 
-// ─── Parse segments from SE fieldData ────────────────────
-function segsFromFields(fd) {
-  var segs = [];
-  var i    = 1;
-  while (fd['seg' + i + 'Name'] !== undefined) {
-    segs.push({
-      name:    String(fd['seg' + i + 'Name']),
-      minutes: parseFloat(fd['seg' + i + 'Minutes']) || 1,
-      color:   fd['seg' + i + 'Color'] || '#ffffff'
-    });
-    i++;
-  }
-  return segs.length ? segs : null;
-}
+// ─── StreamElements events ─────────────────────────────────
 
-// ─── StreamElements events ────────────────────────────────
 window.addEventListener('onWidgetLoad', function(obj) {
-  seLoaded   = true;
-  var fd     = obj.detail.fieldData;
+  seLoaded = true;
+  fd       = obj.detail.fieldData;
+
+  var storeName = fd.storeName || STORE_KEY;
+  STORE_KEY     = storeName || STORE_KEY;
+
   var segs   = segsFromFields(fd) || DEFAULTS.segments;
-  var cd     = fd.countDown !== 'no';
-  init(segs, cd);
+  var offset = offsetFromFields(fd);
+
+  // Try to load persisted elapsed from store
+  try {
+    SE_API.store.get(STORE_KEY).then(function(stored) {
+      var storedElapsed = (stored && typeof stored.elapsed === 'number')
+        ? stored.elapsed
+        : null;
+
+      // If startTimer field is "no" (reset mode), ignore store and use offset
+      if (fd.startTimer === 'no') {
+        storedElapsed = offset;
+        SE_API.store.set(STORE_KEY, { elapsed: storedElapsed });
+      }
+
+      init(segs, offset, storedElapsed);
+    });
+  } catch(e) {
+    // SE_API not available (editor preview), just use offset
+    init(segs, offset, null);
+  }
 });
 
-// Reset button from SE fields panel
-window.addEventListener('onFieldChange', function(obj) {
-  var f = obj.detail.fieldName;
-  var v = obj.detail.value;
+window.addEventListener('onEventReceived', function(obj) {
+  if (!obj.detail || !obj.detail.event) return;
 
-  if (f === 'resetBtn') {
+  var listener = obj.detail.listener;
+  var data     = obj.detail.event;
+
+  // Reset button — per SE docs: listener === 'widget-button'
+  if (listener === 'widget-button' && data.field === 'resetBtn') {
+    resetTimer();
+    return;
+  }
+});
+
+window.addEventListener('onFieldChange', function(obj) {
+  if (!obj.detail) return;
+  var name = obj.detail.fieldName;
+  fd       = obj.detail.fieldData || fd;
+
+  if (name === 'resetBtn') {
     resetTimer();
     return;
   }
 
-  // re-init if any segment field or countDown changed
-  if (f.indexOf('seg') === 0 || f === 'countDown') {
-    var fd   = obj.detail.fieldData || {};
-    var segs = segsFromFields(fd) || (config ? config.segments : DEFAULTS.segments);
-    var cd   = fd.countDown !== undefined ? fd.countDown !== 'no' : (config ? config.countDown : true);
-    init(segs, cd);
-  }
+  if (!config || !fd) return;
+  var segs = segsFromFields(fd) || config.segments;
+  var offset = offsetFromFields(fd);
+  init(segs, offset, null);
 });
 
-// ─── Fallback for SE editor preview ─────────────────────
+// ─── Editor preview fallback ──────────────────────────────
 setTimeout(function() {
-  if (!seLoaded) init(DEFAULTS.segments, DEFAULTS.countDown);
+  if (!seLoaded) {
+    fd = {};
+    init(DEFAULTS.segments, 0, null);
+  }
 }, 500);
