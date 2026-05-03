@@ -11,19 +11,19 @@ body {
 
 .widget {
   width: 100%;
-  padding: 6px 12px 8px;
+  padding: 4px 12px 6px;
   font-family: 'Rajdhani', sans-serif;
 }
 
-/* ── Segment name labels above the bar ── */
+/* ── Labels above bar ── */
 .seg-names {
   display: flex;
   width: 100%;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 
 .seg-name-item {
-  font-size: 12px;
+  font-size: 25px;
   font-weight: 700;
   letter-spacing: 1px;
   text-align: center;
@@ -32,124 +32,78 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   padding: 0 3px;
-  transition: opacity 0.4s;
+  transition: opacity 0.5s;
 }
 
-.seg-name-item.done {
-  opacity: 0.35;
-}
+.seg-name-item.state-done     { opacity: 0.35; }
+.seg-name-item.state-active   { opacity: 1;    }
+.seg-name-item.state-upcoming { opacity: 0.45; }
 
-.seg-name-item.active {
-  opacity: 1;
-}
-
-.seg-name-item.upcoming {
-  opacity: 0.55;
-}
-
-/* ── Progress bar container ── */
+/* ── Bar row ── */
 .bar-outer {
   width: 100%;
-  height: 22px;
+  height: 5px;
   display: flex;
-  border-radius: 11px;
-  overflow: hidden;
-  gap: 2px;
-  background: transparent;
+  gap: 3px;
 }
 
-/* ── Each segment block inside the bar ── */
-.bar-segment {
+.bar-seg {
   height: 100%;
   position: relative;
-  overflow: hidden;
   flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 3px;
   transition: opacity 0.4s;
 }
 
-/* the dark unfilled track behind the fill */
-.bar-segment-track {
+.bar-seg:first-child            { border-radius: 11px 3px 3px 11px; }
+.bar-seg:last-child             { border-radius: 3px 11px 11px 3px; }
+.bar-seg:first-child:last-child { border-radius: 11px; }
+
+/* dim track — always full width */
+.bar-track {
   position: absolute;
   inset: 0;
-  opacity: 0.15;
+  opacity: 0.18;
 }
 
-/* the actual colored fill that grows */
-.bar-segment-fill {
+/* colored fill — width set by JS every tick */
+.bar-fill {
   position: absolute;
   top: 0;
   left: 0;
   height: 100%;
   width: 0%;
-  transition: width 0.35s linear;
 }
 
-/* shimmer only on the active fill */
-.bar-segment-fill.shimmering::after {
-  content: '';
+/* shimmer — only on active segment */
+.bar-shimmer {
   position: absolute;
-  top: 0;
-  left: -80%;
-  width: 50%;
-  height: 100%;
-  background: rgba(255, 255, 255, 0.22);
-  animation: shimmer 2s infinite linear;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.26) 50%,
+    transparent 100%
+  );
+  background-size: 55% 100%;
+  background-repeat: no-repeat;
+  background-position: -100% 0; /* Start further left */
+  
+  /* 5 seconds total, steady speed, loops forever */
+  animation: shimmer 5s infinite linear; 
+  opacity: 0;
+  transition: opacity 0.3s;
 }
+
+.bar-seg.state-active .bar-shimmer { opacity: 1; }
 
 @keyframes shimmer {
-  0%   { left: -80%; }
-  100% { left: 120%; }
+  0%   { background-position: -100% 0; } /* 1. Start completely invisible on the left */
+  40%  { background-position: 200% 0; }  /* 2. Glide smoothly until completely invisible on the right */
+  100% { background-position: 200% 0; }  /* 3. Sit there in the dark for the remaining 3 seconds */
 }
 
-/* done segments: full opacity fill, no shimmer */
-.bar-segment.done .bar-segment-fill {
-  width: 100% !important;
-}
-
-/* upcoming segments: dim track, no fill */
-.bar-segment.upcoming {
-  opacity: 0.45;
-}
-
-/* first segment gets rounded left corners */
-.bar-segment:first-child {
-  border-radius: 11px 0 0 11px;
-}
-
-/* last segment gets rounded right corners */
-.bar-segment:last-child {
-  border-radius: 0 11px 11px 0;
-}
-
-/* single segment: fully rounded */
-.bar-segment:only-child {
-  border-radius: 11px;
-}
-
-/* ── Bottom row ── */
-.time-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-top: 6px;
-}
-
-.time-left {
-  font-family: 'Orbitron', monospace;
-  font-size: 30px;
-  font-weight: 700;
-  color: #ffffff;
-  letter-spacing: 3px;
-  text-shadow: 0 0 14px currentColor;
-  transition: color 0.5s;
-}
-
-.seg-label {
-  font-size: 14px;
-  font-weight: 500;
-  letter-spacing: 1.5px;
-  color: #ffffff;
-  opacity: 0.7;
-  text-transform: uppercase;
-  transition: color 0.4s;
-}
+.bar-seg.state-done     { opacity: 1;    }
+.bar-seg.state-active   { opacity: 1;    }
+.bar-seg.state-upcoming { opacity: 0.35; }
